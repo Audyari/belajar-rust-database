@@ -8,7 +8,7 @@ docker exec -it belajar-rust-datetime-db-1 psql -U postgres
 
 \dt
 
-SELECT \* FROM category;
+SELECT * FROM category;
 
 \d category
 

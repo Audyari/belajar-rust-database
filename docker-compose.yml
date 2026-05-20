@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: 123456
-      POSTGRES_DB: myapp_db
+      POSTGRES_DB: belajar_rust_database
     ports:
       - "5432:5432"
     volumes:

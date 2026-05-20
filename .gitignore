@@ -1,1 +1,78 @@
-/target
+# ============================================
+# 🦀 RUST - Zero-Cost Ignore Pattern
+# ============================================
+
+# --- COMPILE ARTIFACTS (Generated, not source) ---
+# Filosofi: Hasil kompilasi adalah "cost" yang tidak perlu di-version control
+/target/
+*.rs.bk
+*.rlib
+*.prof
+*.heap
+*.gcda
+*.gcno
+
+# --- CARGO LOCK (Debatable - sesuai filosofi) ---
+# Filosofi: Lock file untuk aplikasi (commit), library (jangan)
+# Untuk aplikasi binary: commit Cargo.lock
+# Untuk library: ignore Cargo.lock
+# Cargo.lock  # Uncomment jika library
+
+# --- IDE & EDITOR (Personal choice, not project) ---
+# Filosofi: Tools adalah "abstraction" yang tidak boleh mengganggu source
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- DATABASE & ENVIRONMENT (Runtime, not code) ---
+# Filosofi: Environment adalah "runtime" yang berbeda untuk setiap developer
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+
+# --- MIGRATIONS DATA (Generated from code) ---
+# Filosofi: Data migrasi yang sudah dijalankan adalah "state"
+migrations/*.down.sql  # Backup, tidak perlu di-version?
+# Tapi migrations/*.up.sql HARUS di-commit!
+
+# --- LOGS & TEMP FILES (Transient) ---
+# Filosofi: Log adalah "output", bukan "source"
+*.log
+*.tmp
+*.temp
+*.pid
+
+# --- OS & SHELL (Platform-specific) ---
+# Filosofi: Platform adalah "implementation detail"
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.dSYM
+*.pdb
+
+# --- DEBUG & PROFILING (Development artifacts) ---
+# Filosofi: Debug info adalah "tooling", bukan source code
+*.gch
+*.pdb
+*.idb
+*.ilk
+*.obj
+*.o
+
+# --- SECRETS (Never commit!) ---
+# Filosofi: Security adalah "ownership", jangan di-share
+*.pem
+*.key
+*.crt
+*.secret
+*.password

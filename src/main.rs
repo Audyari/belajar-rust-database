@@ -6,6 +6,8 @@ use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::Duration;
 use std::time::Instant;
+use std::env;
+use dotenv::dotenv; 
 
 struct Category {
     id: String,
@@ -30,13 +32,17 @@ struct Brands {
 }
 
 #[derive(Debug, FromRow)]
-struct Bus {
+struct Buses {
     id: i32,
     name: String,
 }
 
 async fn get_pool() -> Result<PgPool, sqlx::Error> {
-    let url = "postgresql://postgres:123456@localhost:5432/belajar_rust_database";
+
+     dotenv().ok(); // Load .env file
+    
+    let url = env::var("DATABASE_URL")
+        .expect("DATABASE_URL tidak ditemukan di .env");
 
     PgPoolOptions::new()
         .max_connections(5) // ← 5 untuk laptop 2 core
@@ -45,7 +51,7 @@ async fn get_pool() -> Result<PgPool, sqlx::Error> {
         .min_connections(1)
         .acquire_timeout(Duration::from_secs(3)) //connection akan ditutup jika tidak digunakan selama 3 detik
         .idle_timeout(Duration::from_secs(3)) //connection akan ditutup jika tidak digunakan selama 3 detik
-        .connect(url)
+        .connect(&url)
         .await
 }
 
@@ -325,41 +331,96 @@ async fn get_all_brands(pool: &PgPool) -> Result<Vec<Brands>, sqlx::Error> {
 }
 
 //insert bus
-async fn insert_bus(pool: &PgPool, name: &str) -> Result<(), sqlx::Error> {
-    match sqlx::query("INSERT INTO buses (name) VALUES ($1)")
-        .bind(name)
-        .execute(pool)
-        .await
+async fn insert_bus(pool: &PgPool, name: &str) -> Result<Option<i32>, sqlx::Error> {
+    match sqlx::query_scalar::<_, i32>(
+        "INSERT INTO buses (name) VALUES ($1) RETURNING id"
+    )
+    .bind(name)
+    .fetch_optional(pool)
+    .await
     {
-        Ok(_) => println!("✅ Bus '{}' berhasil ditambahkan", name),
+        Ok(Some(id)) => {
+            println!("✅ Bus '{}' berhasil ditambahkan dengan ID {}", name, id);
+            Ok(Some(id))
+        },
+        Ok(None) => {
+            println!("⚠️  Bus '{}' sudah ADA, skip insert", name);
+            Ok(None)
+        },
         Err(e) => {
             if let Some(db_err) = e.as_database_error() {
                 if db_err.code().as_deref() == Some("23505") {
-                    // Unique violation
                     println!("⚠️  Bus '{}' sudah ADA, skip insert", name);
-                    return Ok(());
+                    return Ok(None);
                 }
             }
-            return Err(e);
+            Err(e)
         }
     }
-    Ok(())
 }
-async fn get_all_buses(pool: &PgPool) -> Result<Vec<Bus>, sqlx::Error> {
-    let buses = sqlx::query_as::<_, Bus>("SELECT id, name FROM buses ORDER BY id")
+
+async fn get_all_buses(pool: &PgPool) -> Result<Vec<Buses>, sqlx::Error> {
+    let buses = sqlx::query_as::<_, Buses>("SELECT id, name FROM buses ORDER BY id")
         .fetch_all(pool)
         .await?;
 
     Ok(buses)
 }
 
-async fn get_bus_by_id(pool: &PgPool, id: i32) -> Result<Option<Bus>, sqlx::Error> {
-    let bus = sqlx::query_as::<_, Bus>("SELECT id, name FROM buses WHERE id = $1")
+async fn get_bus_by_id(pool: &PgPool, id: i32) -> Result<Option<Buses>, sqlx::Error> {
+    let bus = sqlx::query_as::<_, Buses>("SELECT id, name FROM buses WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await?;
 
     Ok(bus)
+}
+
+#[allow(dead_code)]
+async fn delete_bus_by_id(pool: &PgPool, id: i32) -> Result<(), sqlx::Error> {
+    let result = sqlx::query("DELETE FROM buses WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    
+    if result.rows_affected() > 0 {
+        println!("✅ Bus dengan ID {} berhasil dihapus", id);
+    } else {
+        println!("⚠️  Bus dengan ID {} tidak ditemukan", id);
+    }
+    
+    Ok(())
+}
+
+async fn insert_bus_returning(pool: &PgPool, name: &str) -> Result<Option<Buses>, sqlx::Error> {
+    match sqlx::query_as::<_, Buses>(
+        "INSERT INTO buses (name) VALUES ($1) RETURNING id, name"
+    )
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(Some(bus)) => {
+            println!("✅ Bus '{}' berhasil ditambahkan (ID: {})", name, bus.id);
+            Ok(Some(bus))
+        }
+        Ok(None) => {
+            // Ini jarang terjadi, tapi amankan saja
+            println!("⚠️  Gagal insert '{}', coba lagi", name);
+            Ok(None)
+        }
+        Err(e) => {
+            // Cek apakah error karena duplikat
+            if let Some(db_err) = e.as_database_error() {
+                if db_err.code().as_deref() == Some("23505") {
+                    println!("⚠️  Bus '{}' sudah ADA, tidak perlu insert lagi", name);
+                    return Ok(None);
+                }
+            }
+            // Error lain (koneksi, dll) tetap di propagate
+            Err(e)
+        }
+    }
 }
 
 fn main() -> Result<(), sqlx::Error> {
@@ -577,9 +638,18 @@ fn main() -> Result<(), sqlx::Error> {
         }
 
         // Insert beberapa bus
-        insert_bus(&pool, "Bus Transjakarta").await?;
-        insert_bus(&pool, "Bus Kota").await?;
-        insert_bus(&pool, "Bus Pariwisata").await?;
+        if let Some(id) = insert_bus(&pool, "Bus Baru").await? {
+            println!("Bus baru punya ID: {}", id);
+        }
+        if let Some(id) = insert_bus(&pool, "Bus Kota").await? {
+            println!("Bus Kota punya ID: {}", id);
+        }
+        if let Some(id) = insert_bus(&pool, "Bus Pariwisata").await? {
+            println!("Bus Pariwisata punya ID: {}", id);
+        }
+        if let Some(id) = insert_bus(&pool, "Bus Sekolah").await? {
+            println!("Bus Sekolah punya ID: {}", id);
+        }
 
         println!();
 
@@ -597,6 +667,20 @@ fn main() -> Result<(), sqlx::Error> {
             Some(bus) => println!("✅ Bus dengan ID 2: {} - {}", bus.id, bus.name),
             None => println!("⚠️ Bus dengan ID 2 tidak ditemukan"),
         }
+
+        // Insert bus dengan RETURNING
+        match insert_bus_returning(&pool, "Bus Listrik Baru").await? {
+            Some(bus) => println!("✅ Bus baru: {:?}", bus),
+            None => println!("⚠️  Bus sudah ada atau gagal insert"),
+        }
+
+         match insert_bus_returning(&pool, "Bus Listrik Baru 2").await? {
+            Some(bus) => println!("✅ Bus baru: {:?}", bus),
+            None => println!("⚠️  Bus sudah ada atau gagal insert"),
+        }
+
+        // Hapus bus
+        //delete_bus_by_id(&pool, 23).await?; // Hapus Bus Sekolah (ID 23)
 
         pool.close().await;
         Ok::<(), sqlx::Error>(())
