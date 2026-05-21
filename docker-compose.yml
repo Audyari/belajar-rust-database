@@ -9,6 +9,19 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # 🔴 TAMBAHKAN INI!
+  redis:
+    image: redis:alpine
+    container_name: redis-stasiun
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+  redis_data:  # ← Volume untuk Redis

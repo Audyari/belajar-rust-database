@@ -1,14 +1,18 @@
 use chrono::DateTime;
 use chrono::{FixedOffset, Utc};
+use dotenv::dotenv;
 use futures::TryStreamExt;
+use redis::AsyncCommands;
 use sqlx::FromRow;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use std::env;
 use std::time::Duration;
 use std::time::Instant;
-use std::env;
-use dotenv::dotenv; 
 
+// kusus redis
+
+#[derive(Debug, Clone, FromRow)]
 struct Category {
     id: String,
     name: String,
@@ -38,11 +42,9 @@ struct Buses {
 }
 
 async fn get_pool() -> Result<PgPool, sqlx::Error> {
+    dotenv().ok(); // Load .env file
 
-     dotenv().ok(); // Load .env file
-    
-    let url = env::var("DATABASE_URL")
-        .expect("DATABASE_URL tidak ditemukan di .env");
+    let url = env::var("DATABASE_URL").expect("DATABASE_URL tidak ditemukan di .env");
 
     PgPoolOptions::new()
         .max_connections(5) // ← 5 untuk laptop 2 core
@@ -305,7 +307,7 @@ async fn insert_brands(
         .execute(pool)
         .await?;
 
-    println!("✅ Brand '{}' (ID: {}) berhasil ditambahkan", name, id);
+    println!("✅ Brand '{name}' (ID: {id}) berhasil ditambahkan");
     Ok(())
 }
 
@@ -332,27 +334,25 @@ async fn get_all_brands(pool: &PgPool) -> Result<Vec<Brands>, sqlx::Error> {
 
 //insert bus
 async fn insert_bus(pool: &PgPool, name: &str) -> Result<Option<i32>, sqlx::Error> {
-    match sqlx::query_scalar::<_, i32>(
-        "INSERT INTO buses (name) VALUES ($1) RETURNING id"
-    )
-    .bind(name)
-    .fetch_optional(pool)
-    .await
+    match sqlx::query_scalar::<_, i32>("INSERT INTO buses (name) VALUES ($1) RETURNING id")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
     {
         Ok(Some(id)) => {
-            println!("✅ Bus '{}' berhasil ditambahkan dengan ID {}", name, id);
+            println!("✅ Bus '{name}' berhasil ditambahkan dengan ID {id}");
             Ok(Some(id))
-        },
+        }
         Ok(None) => {
-            println!("⚠️  Bus '{}' sudah ADA, skip insert", name);
+            println!("⚠️  Bus '{name}' sudah ADA, skip insert");
             Ok(None)
-        },
+        }
         Err(e) => {
-            if let Some(db_err) = e.as_database_error() {
-                if db_err.code().as_deref() == Some("23505") {
-                    println!("⚠️  Bus '{}' sudah ADA, skip insert", name);
-                    return Ok(None);
-                }
+            if let Some(db_err) = e.as_database_error()
+                && db_err.code().as_deref() == Some("23505")
+            {
+                println!("⚠️ Bus sudah ADA, skip insert");
+                return Ok(None);
             }
             Err(e)
         }
@@ -382,23 +382,22 @@ async fn delete_bus_by_id(pool: &PgPool, id: i32) -> Result<(), sqlx::Error> {
         .bind(id)
         .execute(pool)
         .await?;
-    
+
     if result.rows_affected() > 0 {
-        println!("✅ Bus dengan ID {} berhasil dihapus", id);
+        println!("✅ Bus dengan ID {id} berhasil dihapus");
     } else {
-        println!("⚠️  Bus dengan ID {} tidak ditemukan", id);
+        println!("⚠️  Bus dengan ID {id} tidak ditemukan");
     }
-    
+
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn insert_bus_returning(pool: &PgPool, name: &str) -> Result<Option<Buses>, sqlx::Error> {
-    match sqlx::query_as::<_, Buses>(
-        "INSERT INTO buses (name) VALUES ($1) RETURNING id, name"
-    )
-    .bind(name)
-    .fetch_optional(pool)
-    .await
+    match sqlx::query_as::<_, Buses>("INSERT INTO buses (name) VALUES ($1) RETURNING id, name")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
     {
         Ok(Some(bus)) => {
             println!("✅ Bus '{}' berhasil ditambahkan (ID: {})", name, bus.id);
@@ -406,24 +405,33 @@ async fn insert_bus_returning(pool: &PgPool, name: &str) -> Result<Option<Buses>
         }
         Ok(None) => {
             // Ini jarang terjadi, tapi amankan saja
-            println!("⚠️  Gagal insert '{}', coba lagi", name);
+            println!("⚠️  Gagal insert '{name}', coba lagi");
             Ok(None)
         }
         Err(e) => {
-            // Cek apakah error karena duplikat
-            if let Some(db_err) = e.as_database_error() {
-                if db_err.code().as_deref() == Some("23505") {
-                    println!("⚠️  Bus '{}' sudah ADA, tidak perlu insert lagi", name);
-                    return Ok(None);
-                }
+            if let Some(db_err) = e.as_database_error()
+                && db_err.code().as_deref() == Some("23505")
+            {
+                println!("⚠️  Bus '{name}' sudah ADA, tidak perlu insert lagi");
+                return Ok(None);
             }
-            // Error lain (koneksi, dll) tetap di propagate
             Err(e)
         }
     }
 }
 
-fn main() -> Result<(), sqlx::Error> {
+// ini buat koneksi ke redis
+async fn get_redis_conn() -> redis::aio::MultiplexedConnection {
+    // Kembali ke localhost (sudah di-port mapping)
+    let client = redis::Client::open("redis://127.0.0.1:6379/0").expect("Gagal buat client Redis");
+    client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Gagal konek ke Redis")
+}
+
+#[allow(clippy::too_many_lines)]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
@@ -639,16 +647,16 @@ fn main() -> Result<(), sqlx::Error> {
 
         // Insert beberapa bus
         if let Some(id) = insert_bus(&pool, "Bus Baru").await? {
-            println!("Bus baru punya ID: {}", id);
+            println!("Bus baru punya ID: {id}");
         }
         if let Some(id) = insert_bus(&pool, "Bus Kota").await? {
-            println!("Bus Kota punya ID: {}", id);
+            println!("Bus Kota punya ID: {id}");
         }
         if let Some(id) = insert_bus(&pool, "Bus Pariwisata").await? {
-            println!("Bus Pariwisata punya ID: {}", id);
+            println!("Bus Pariwisata punya ID: {id}");
         }
         if let Some(id) = insert_bus(&pool, "Bus Sekolah").await? {
-            println!("Bus Sekolah punya ID: {}", id);
+            println!("Bus Sekolah punya ID: {id}");
         }
 
         println!();
@@ -669,20 +677,154 @@ fn main() -> Result<(), sqlx::Error> {
         }
 
         // Insert bus dengan RETURNING
-        match insert_bus_returning(&pool, "Bus Listrik Baru").await? {
-            Some(bus) => println!("✅ Bus baru: {:?}", bus),
-            None => println!("⚠️  Bus sudah ada atau gagal insert"),
-        }
+        // match insert_bus_returning(&pool, "Bus Listrik Baru").await? {
+        //     Some(bus) => println!("✅ Bus baru: {bus:?}"),
+        //     None => println!("⚠️  Bus sudah ada atau gagal insert"),
+        // }
 
-         match insert_bus_returning(&pool, "Bus Listrik Baru 2").await? {
-            Some(bus) => println!("✅ Bus baru: {:?}", bus),
-            None => println!("⚠️  Bus sudah ada atau gagal insert"),
-        }
+        // match insert_bus_returning(&pool, "Bus Listrik Baru 2").await? {
+        //     Some(bus) => println!("✅ Bus baru: {bus:?}"),
+        //     None => println!("⚠️  Bus sudah ada atau gagal insert"),
+        // }
 
         // Hapus bus
         //delete_bus_by_id(&pool, 23).await?; // Hapus Bus Sekolah (ID 23)
 
+        let mut conn = get_redis_conn().await;
+        println!("✅ Koneksi ke Redis BERHASIL! ");
+
+        let keys: Vec<String> = conn.keys("*").await?;
+        println!("🔑 Keys di Redis: {:?}", keys);
+
         pool.close().await;
-        Ok::<(), sqlx::Error>(())
+        Ok::<(), Box<dyn std::error::Error>>(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redis::AsyncCommands;
+
+    async fn get_redis_conn() -> redis::aio::MultiplexedConnection {
+        let client =
+            redis::Client::open("redis://127.0.0.1:6379/").expect("Gagal buat client Redis");
+        client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("Gagal konek ke Redis")
+    }
+
+    #[tokio::test]
+    async fn test_redis() {
+        // ✅ Cara baru (recommended)
+
+        let mut conn = get_redis_conn().await;
+
+        let _: () = conn.set("name", "Audyari Wiyono").await.unwrap();
+        let value: String = conn.get("name").await.unwrap();
+        println!("Isi data nya: {}", value);
+        assert_eq!(value, "Audyari Wiyono");
+
+        // Cleanup
+        let _: () = conn.del("name").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_redis_string() -> Result<(), redis::RedisError> {
+        let mut conn = get_redis_conn().await;
+
+        let _: () = conn.set_ex("name", "Audyari Wiyono", 2).await?;
+        let value: String = conn.get("name").await?;
+        println!("Isi data nya: {}", value);
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+        let value: Option<String> = conn.get("name").await?;
+        println!("Isi data nya: {:?}", value);
+
+        Ok(())
+    }
+
+    //cargo test tests::test_correct_cache_logic -- --nocapture
+    #[tokio::test]
+    async fn test_correct_cache_logic() {
+        let mut redis_conn = get_redis_conn().await;
+        let pg_pool = get_pool().await.unwrap();
+
+        let category_id = "C001";
+        let cache_key = format!("category:{}:name", category_id);
+
+        // ========== PANGGILAN PERTAMA (CACHE MISS) ==========
+        println!("\n🔄 PANGGILAN KE-1:");
+
+        let start = Instant::now();
+
+        // 1. Cek Redis dulu
+        let cached: Option<String> = redis_conn.get(&cache_key).await.unwrap();
+
+        let result = match cached {
+            Some(value) => {
+                println!("⚡ CACHE HIT! Ambil dari Redis");
+                value
+            }
+            None => {
+                println!("📚 CACHE MISS! Ambil dari Database...");
+
+                // 2. Ambil dari Database
+                let name: String = sqlx::query_scalar("SELECT name FROM category WHERE id = $1")
+                    .bind(category_id)
+                    .fetch_one(&pg_pool)
+                    .await
+                    .unwrap();
+
+                // 3. Simpan ke Redis (biar lain kali cepat)
+                let _: () = redis_conn.set_ex(&cache_key, &name, 5).await.unwrap();
+                println!("💾 Data disimpan ke Redis (cache 5 detik)");
+
+                name
+            }
+        };
+
+        let duration = start.elapsed();
+        println!("✅ Hasil: {} (🕐 {} ms)", result, duration.as_millis());
+
+        // ========== PANGGILAN KEDUA (CACHE HIT) ==========
+        println!("\n🔄 PANGGILAN KE-2:");
+
+        let start = Instant::now();
+
+        // Langsung dari Redis!
+        let cached: Option<String> = redis_conn.get(&cache_key).await.unwrap();
+        let result2 = cached.unwrap();
+
+        let duration2 = start.elapsed();
+        println!(
+            "⚡ Hasil: {} (🕐 {} μs = {} ms)",
+            result2,
+            duration2.as_micros(),
+            duration2.as_millis()
+        );
+
+        // ========== PANGGILAN KE-3,4,5 (CACHE HIT TERUS) ==========
+        println!("\n🔄 PANGGILAN 3-5 (semua dari Redis):");
+
+        for i in 3..=5 {
+            let start = Instant::now();
+            let cached: String = redis_conn.get(&cache_key).await.unwrap();
+            let duration = start.elapsed();
+            println!(
+                "   Panggilan ke-{}: {} (🕐 {} μs)",
+                i,
+                cached,
+                duration.as_micros()
+            );
+        }
+
+        // ========== KESIMPULAN ==========
+        println!("\n📊 KESIMPULAN:");
+        println!("   ✅ Panggilan ke-1: Ambil dari DATABASE (lambat)");
+        println!("   ✅ Panggilan ke-2 sampai seterusnya: Ambil dari REDIS (cepat!)");
+        println!("   ✅ Hanya 1x akses database, sisanya dari cache!");
+    }
 }

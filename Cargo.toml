@@ -9,3 +9,4 @@ futures = "0.3.32"
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "chrono", "postgres", "derive"] }
 tokio = { version = "1.52.3", features = ["full"] }
 dotenv = "0.15" 
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
