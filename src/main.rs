@@ -422,8 +422,12 @@ async fn insert_bus_returning(pool: &PgPool, name: &str) -> Result<Option<Buses>
 
 // ini buat koneksi ke redis
 async fn get_redis_conn() -> redis::aio::MultiplexedConnection {
-    // Kembali ke localhost (sudah di-port mapping)
-    let client = redis::Client::open("redis://127.0.0.1:6379/0").expect("Gagal buat client Redis");
+    dotenv().ok(); // Load .env file
+
+    let redis_url = env::var("REDIS_URL").expect("REDIS_URL tidak ditemukan di .env");
+
+    let client = redis::Client::open(redis_url).expect("Gagal buat client Redis");
+
     client
         .get_multiplexed_async_connection()
         .await
@@ -694,7 +698,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("✅ Koneksi ke Redis BERHASIL! ");
 
         let keys: Vec<String> = conn.keys("*").await?;
-        println!("🔑 Keys di Redis: {:?}", keys);
+        println!("🔑 Keys di Redis: {keys:?}");
 
         pool.close().await;
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -704,11 +708,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dotenv::dotenv;
     use redis::AsyncCommands;
+    use std::env;
 
     async fn get_redis_conn() -> redis::aio::MultiplexedConnection {
-        let client =
-            redis::Client::open("redis://127.0.0.1:6379/").expect("Gagal buat client Redis");
+        dotenv().ok(); // Load .env file
+
+        let redis_url = env::var("REDIS_URL").expect("REDIS_URL tidak ditemukan di .env");
+
+        let client = redis::Client::open(redis_url).expect("Gagal buat client Redis");
+
         client
             .get_multiplexed_async_connection()
             .await
@@ -740,8 +750,12 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-        let value: Option<String> = conn.get("name").await?;
-        println!("Isi data nya: {:?}", value);
+        let result: Result<Option<String>, _> = conn.get("name").await;
+
+        match result {
+            Ok(value) => println!("Isi data nya: {:?}", value),
+            Err(e) => println!("Error: {}", e),
+        }
 
         Ok(())
     }
@@ -826,5 +840,26 @@ mod tests {
         println!("   ✅ Panggilan ke-1: Ambil dari DATABASE (lambat)");
         println!("   ✅ Panggilan ke-2 sampai seterusnya: Ambil dari REDIS (cepat!)");
         println!("   ✅ Hanya 1x akses database, sisanya dari cache!");
+    }
+
+    #[tokio::test]
+    async fn test_list_redis() {
+        let mut redis_conn = get_redis_conn().await;
+
+        let test_list: Result<(), redis::RedisError> = redis_conn.rpush("test_list", "item1").await;
+        match test_list {
+            Ok(_) => println!("✅ berhasil"),
+            Err(e) => println!("❌ Error: {}", e),
+        }
+
+        let _: () = redis_conn.rpush("test_list", "item2").await.unwrap();
+        let _: () = redis_conn.rpush("test_list", "item3").await.unwrap();
+
+        let keys: Vec<String> = redis_conn.lrange("test_list", 0, -1).await.unwrap();
+        println!("Keys: {:?}", keys);
+
+        // 🗑️ Hapus key
+        let deleted: i32 = redis_conn.del("test_list").await.unwrap();
+        println!("Jumlah key dihapus: {}", deleted); // 1
     }
 }
