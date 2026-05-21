@@ -710,6 +710,7 @@ mod tests {
     use super::*;
     use dotenv::dotenv;
     use redis::AsyncCommands;
+    use redis::geo::{RadiusOptions, Unit};
     use std::env;
 
     async fn get_redis_conn() -> redis::aio::MultiplexedConnection {
@@ -742,6 +743,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_redis_string() -> Result<(), redis::RedisError> {
+        //📋 Papan pengumuman (1 judul, 1 isi)
+
         let mut conn = get_redis_conn().await;
 
         let _: () = conn.set_ex("name", "Audyari Wiyono", 2).await?;
@@ -844,6 +847,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_redis() {
+        //🎫 Daftar item (urutan penting)
+
         let mut redis_conn = get_redis_conn().await;
 
         let test_list: Result<(), redis::RedisError> = redis_conn.rpush("test_list", "item1").await;
@@ -861,5 +866,157 @@ mod tests {
         // 🗑️ Hapus key
         let deleted: i32 = redis_conn.del("test_list").await.unwrap();
         println!("Jumlah key dihapus: {}", deleted); // 1
+    }
+
+    #[tokio::test]
+    async fn test_set_redis() {
+        //🎫 Kumpulan tiket unik (tidak ada duplikat)
+
+        let mut redis_conn = get_redis_conn().await;
+
+        let test_set: Result<(), redis::RedisError> = redis_conn.sadd("test_set", "item1").await;
+        match test_set {
+            Ok(_) => println!("✅ berhasil"),
+            Err(e) => println!("❌ Error: {}", e),
+        }
+
+        // 🗑️ Hapus key
+        let deleted: i32 = redis_conn.del("test_set").await.unwrap();
+        println!("Jumlah key dihapus: {}", deleted); // 1
+    }
+
+    #[tokio::test]
+    async fn test_sorted_set_redis() {
+        // Redis Sorted Set
+
+        let mut redis_conn = get_redis_conn().await;
+
+        // 🔴 ZADD = tambah member dengan skor
+        let result: Result<(), redis::RedisError> = redis_conn.zadd("test_set", "item1", 1).await;
+        match result {
+            Ok(_) => println!("✅ Berhasil"),
+            Err(e) => println!("❌ Gagal: {}", e),
+        }
+        let result: Result<(), redis::RedisError> = redis_conn.zadd("test_set", "item2", 2).await;
+        match result {
+            Ok(_) => println!("✅ Berhasil"),
+            Err(e) => println!("❌ Gagal: {}", e),
+        }
+        let result: Result<(), redis::RedisError> = redis_conn.zadd("test_set", "item3", 3).await;
+        match result {
+            Ok(_) => println!("✅ Berhasil"),
+            Err(e) => println!("❌ Gagal: {}", e),
+        }
+
+        // 🔍 Lihat isi sorted set
+        let members: Vec<String> = redis_conn.zrange("test_set", 0, -1).await.unwrap();
+        println!("📋 Sebelum hapus: {:?}", members); // ["item1", "item2", "item3"]
+
+        // 🗑️ Hapus key
+        let deleted: i32 = redis_conn.del("test_set").await.unwrap();
+        println!("Jumlah key dihapus: {}", deleted); // 1
+
+        // 🔍 Cek apakah masih ada key yang cocok pattern "test_*"
+        let remaining_keys: Vec<String> = redis_conn.keys("test_*").await.unwrap();
+        println!("Keys setelah hapus: {:?}", remaining_keys); // [] (kosong)
+    }
+
+    #[tokio::test]
+    async fn test_hash_redis() {
+        //🚏 REDIS HASH = LEMARI ARSIP PER BUS
+
+        let mut redis_conn = get_redis_conn().await;
+
+        // 1. BASIC HSET & HGET
+        println!("--- BASIC HSET/HGET ---");
+        let result: Result<(), redis::RedisError> =
+            redis_conn.hset("user:1001", "name", "Alice").await;
+        match result {
+            Ok(_) => println!("✅ Berhasil"),
+            Err(e) => println!("❌ Gagal: {}", e),
+        }
+
+        let result: Result<(), redis::RedisError> = redis_conn
+            .hset("user:1001", "email", "alice@example.com")
+            .await;
+        match result {
+            Ok(_) => println!("✅ Berhasil"),
+            Err(e) => println!("❌ Gagal: {}", e),
+        }
+
+        let result: Result<(), redis::RedisError> = redis_conn.hset("user:1001", "age", "25").await;
+        match result {
+            Ok(_) => println!("✅ Berhasil"),
+            Err(e) => println!("❌ Gagal: {}", e),
+        }
+
+        // ... kode test lainnya ...
+
+        // ✅ HAPUS data setelah test selesai
+        let result: Result<(), redis::RedisError> = redis_conn.del("user:1001").await;
+        match result {
+            Ok(_) => println!("✅ Berhasil menghapus data"),
+            Err(e) => println!("❌ Gagal: {}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_redis_geo() -> Result<(), redis::RedisError> {
+        //koneksi ke redis
+        let mut conn = get_redis_conn().await;
+
+        // GEOADD
+        let result: i32 = conn
+            .geo_add(
+                "buses",
+                &[
+                    (106.827, -6.175, "Monas"),
+                    (106.823, -6.195, "Grand Indonesia"),
+                    (106.830, -6.176, "Gambir Station"),
+                ],
+            )
+            .await?;
+
+        println!("✅ Berhasil menambahkan {} bus", result);
+
+        // ✅ GEODIST - PAKAI Unit::Kilometers, BUKAN "km"!
+        let distance: f64 = conn
+            .geo_dist("buses", "Monas", "Gambir Station", Unit::Kilometers) // ← bukan "km"!
+            .await?;
+        println!("📏 Jarak Monas → Gambir: {:.2} km", distance);
+
+        let distance2: f64 = conn
+            .geo_dist("buses", "Monas", "Grand Indonesia", Unit::Kilometers) // ← bukan "km"!
+            .await?;
+        println!("📏 Jarak Monas → Grand Indonesia: {:.2} km", distance2);
+
+        let distance3: f64 = conn
+            .geo_dist(
+                "buses",
+                "Grand Indonesia",
+                "Gambir Station",
+                Unit::Kilometers,
+            ) // ← bukan "km"!
+            .await?;
+        println!("📏 Jarak Grand Indonesia → Gambir: {:.2} km", distance3);
+
+        // ✅ GEORADIUS - PAKAI Unit::Kilometers, BUKAN "km"!
+
+        let bus_dalam_radius: Vec<String> = conn
+            .geo_radius(
+                "buses",
+                106.827,
+                -6.175,
+                1.0,
+                Unit::Kilometers,
+                RadiusOptions::default(),
+            )
+            .await?;
+        println!(
+            "🔍 Bus dalam radius 1 km dari Monas: {:?}",
+            bus_dalam_radius
+        );
+
+        Ok(())
     }
 }
