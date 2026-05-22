@@ -711,6 +711,8 @@ mod tests {
     use dotenv::dotenv;
     use redis::AsyncCommands;
     use redis::geo::{RadiusOptions, Unit};
+    use redis::streams::StreamReadOptions;
+    use redis::streams::StreamReadReply;
     use std::env;
 
     async fn get_redis_conn() -> redis::aio::MultiplexedConnection {
@@ -1016,6 +1018,435 @@ mod tests {
             "🔍 Bus dalam radius 1 km dari Monas: {:?}",
             bus_dalam_radius
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_hyper_log_log() {
+        //HYPERLOGLOG (nyimpen fingerprint) mirip kaya redis set:
+
+        let mut redis_conn = get_redis_conn().await;
+
+        println!("\n=== HYPERLOGLOG (FINGERPRINT) ===");
+        let result1: i64 = redis_conn
+            .pfadd("hll_fingerprint", "Andi Budiawan, lahir 1990")
+            .await
+            .unwrap();
+
+        let result2: i64 = redis_conn
+            .pfadd("hll_fingerprint", "Audyari Wiyono, lahir 1983")
+            .await
+            .unwrap();
+
+        println!("✅ PFADD result1: {}", result1);
+        println!("✅ PFADD result2: {}", result2);
+
+        // Cuma bisa tau jumlah
+        let jumlah: i64 = redis_conn.pfcount("hll_fingerprint").await.unwrap();
+        println!("🔢 Jumlah unik (HLL): {}", jumlah);
+
+        // 🔧 FIX: Explicitly specify return type
+        let _: i32 = redis_conn.del("hll_fingerprint").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_pipeline() -> redis::RedisResult<()> {
+        // seperti asingkronus berbarengan pake pipeline
+
+        let mut redis_conn = get_redis_conn().await;
+
+        // 📦 Data banyak (misal dari database/API/user input)
+        let users = vec![
+            ("Andi", 25),
+            ("Budi", 30),
+            ("Citra", 22),
+            ("Dina", 28),
+            ("Eka", 35),
+            // ... bisa sampe ribuan!
+        ];
+
+        // 🚀 Bikin pipeline
+        let mut pipe = redis::pipe();
+
+        // 🔄 LOOP: Tambahin perintah ke pipeline
+        for (name, age) in &users {
+            pipe.cmd("SETEX")
+                .arg(format!("user:{}", name)) // key: user:Andi
+                .arg(60) // expire 60 detik
+                .arg(age) // value: umur
+                .ignore();
+        }
+
+        // 🎯 Eksekusi SEMUA sekaligus!
+        let _: () = pipe.query_async(&mut redis_conn).await?;
+
+        // Verifikasi sample
+        let umur_andi: String = redis_conn.get("user:Andi").await?;
+        println!("✅ Umur Andi: {}", umur_andi);
+
+        // Bersihin
+        for (name, _) in &users {
+            let _: i32 = redis_conn.del(format!("user:{}", name)).await?;
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transaction() -> redis::RedisResult<()> {
+        //penggunaan test_transaction menggunakan atomic jadi berurutan
+
+        let mut redis_conn = get_redis_conn().await;
+
+        println!("\n=== TRANSACTION DI REDIS ===");
+
+        // 🔥 PAKE INCRBY di akhir (return integer, bukan string!)
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .cmd("SET")
+            .arg("saldo")
+            .arg(100)
+            .ignore()
+            .cmd("INCRBY")
+            .arg("saldo")
+            .arg(50); // ← INCRBY return i64
+
+        // 🔥 FIX: Pake Vec<i64> karena .atomic() return array
+        let hasil: Vec<i64> = pipe.query_async(&mut redis_conn).await?;
+
+        // Ambil element terakhir (hasil INCRBY)
+        let saldo_akhir = hasil.last().unwrap();
+        println!("Saldo akhir: {}", saldo_akhir);
+
+        // // Bersihin
+        let _: i32 = redis_conn.del("saldo").await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stream_publish() -> redis::RedisResult<()> {
+        // PUBLISH STREAM (XADD) - MIKROFON
+
+        let mut redis_conn = get_redis_conn().await;
+
+        let stream_key = "terminal:pengumuman";
+
+        println!("\n=== 📢 TERMINAL BUS - SISTEM PENGUMUMAN ===\n");
+
+        // ==========================================
+        // PUBLISHER: MIKROFON (XADD)
+        // ==========================================
+        println!("🎤 PETUGAS TERMINAL (Publisher):");
+
+        // ✅ FIX: Pake String, bukan StreamId
+        let id1: String = redis_conn
+            .xadd(
+                stream_key,
+                "*", // auto-generate ID
+                &[
+                    ("waktu", "08:00"),
+                    ("jenis", "kedatangan"),
+                    ("bus", "B123"),
+                    ("tujuan", "Jakarta"),
+                ],
+            )
+            .await?;
+        println!("   📢 Pengumuman: 'Bus B123 jurusan Jakarta TELAH DATANG!'");
+        println!("      📋 ID: {}", id1);
+
+        // Pengumuman 2
+        let id2: String = redis_conn
+            .xadd(
+                stream_key,
+                "*",
+                &[
+                    ("waktu", "08:15"),
+                    ("jenis", "keberangkatan"),
+                    ("bus", "B123"),
+                    ("tujuan", "Jakarta"),
+                ],
+            )
+            .await?;
+        println!("   📢 Pengumuman: 'Bus B123 jurusan Jakarta AKAN BERANGKAT!'");
+        println!("      📋 ID: {}", id2);
+
+        // Pengumuman 3
+        let id3: String = redis_conn
+            .xadd(
+                stream_key,
+                "*",
+                &[
+                    ("waktu", "08:30"),
+                    ("jenis", "info"),
+                    ("pesan", "Ada promo tiket 50%!"),
+                ],
+            )
+            .await?;
+        println!("   📢 Pengumuman: 'PROMO! Tiket diskon 50%!'");
+        println!("      📋 ID: {}", id3);
+
+        println!("\n✅ Semua pengumuman tercatat di STREAM!\n");
+
+        let total: i32 = redis_conn.xlen(stream_key).await?;
+        println!("\n📊 Total pengumuman di papan: {}\n", total);
+
+        // ==========================================
+        // CEK JUMLAH PENGUMUMAN
+        // ==========================================
+
+        println!("📖 Baca semua pengumuman:");
+
+        let raw: redis::Value = redis_conn.xrange(stream_key, "-", "+").await?;
+
+        // ✅ GANTI DENGAN INI (format bagus)
+        if let redis::Value::Bulk(entries) = raw {
+            for (i, entry) in entries.iter().enumerate() {
+                println!("─────────────────────────────────────────");
+                println!("📌 Pengumuman #{}", i + 1);
+
+                if let redis::Value::Bulk(fields) = entry {
+                    let mut is_first = true;
+                    let mut current_key = String::new();
+
+                    for field in fields {
+                        if let redis::Value::Data(data) = field {
+                            let text = String::from_utf8_lossy(data);
+
+                            if is_first {
+                                println!("🆔 ID: {}", text);
+                                is_first = false;
+                            } else if current_key.is_empty() {
+                                current_key = text.to_string();
+                            } else {
+                                println!("📝 {}: {}", current_key, text);
+                                current_key.clear();
+                            }
+                        }
+                    }
+                }
+            }
+            println!("─────────────────────────────────────────");
+        } else {
+            println!("⚠️ Tidak ada pengumuman");
+        }
+        // Bersihin
+        let _: i32 = redis_conn.del(stream_key).await?;
+        println!("\n🧹 Stream dihapus");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stream_get() -> redis::RedisResult<()> {
+        // GET STREAM (XRANGE) - BACA PAPAN PENGUMUMAN
+
+        let mut redis_conn = get_redis_conn().await;
+
+        let stream_key = "terminal:pengumuman";
+
+        println!("\n=== 📋 TERMINAL BUS - PAPAN PENGUMUMAN ===\n");
+
+        // ==========================================
+        // STEP 1: PUBLISH PENGUMUMAN
+        // ==========================================
+        println!("📢 MENCATAT PENGUMUMAN KE PAPAN:");
+
+        let pengumuman = vec![
+            ("08:00", "Bus Jakarta DATANG"),
+            ("08:05", "Bus Bandung DATANG"),
+            ("08:10", "Bus Jakarta BERANGKAT"),
+            ("08:15", "Bus Surabaya DATANG"),
+            ("08:20", "Info: Pintu 3 ditutup"),
+            ("08:25", "Bus Bandung BERANGKAT"),
+            ("08:30", "PROMO: Tiket malam 30%"),
+        ];
+
+        for (waktu, pesan) in pengumuman {
+            // ✅ FIX: Tambah let _: () = atau let _: String =
+            let _: () = redis_conn
+                .xadd(stream_key, "*", &[("waktu", waktu), ("pesan", pesan)])
+                .await?;
+            println!("   📝 {} - {}", waktu, pesan);
+        }
+
+        // ==========================================
+        // STEP 2: BACA SEMUA PENGUMUMAN (XRANGE)
+        // ==========================================
+        println!("\n📖 BACA SEMUA PENGUMUMAN DARI PAPAN:");
+
+        let semua: redis::Value = redis_conn.xrange(stream_key, "-", "+").await?;
+
+        if let redis::Value::Bulk(entries) = semua {
+            for (i, entry) in entries.iter().enumerate() {
+                if let redis::Value::Bulk(fields) = entry {
+                    let mut is_first = true;
+                    let mut current_key = String::new();
+
+                    for field in fields {
+                        if let redis::Value::Data(data) = field {
+                            let text = String::from_utf8_lossy(&data);
+
+                            if is_first {
+                                println!("   📌 [{}] ID: {}", i + 1, text);
+                                is_first = false;
+                            } else if current_key.is_empty() {
+                                current_key = text.to_string();
+                            } else {
+                                println!("      {}: {}", current_key, text);
+                                current_key.clear();
+                            }
+                        }
+                    }
+                    println!();
+                }
+            }
+        }
+
+        // ==========================================
+        // STEP 3: BACA PENGUMUMAN TERBARU (XREVRANGE_COUNT)
+        // ==========================================
+        println!("🆕 BACA 3 PENGUMUMAN TERBARU:");
+
+        let terbaru: redis::Value = redis_conn.xrevrange_count(stream_key, "+", "-", 3).await?;
+
+        if let redis::Value::Bulk(entries) = terbaru {
+            for entry in entries {
+                if let redis::Value::Bulk(fields) = entry {
+                    let mut is_first = true;
+                    let mut current_key = String::new();
+                    let mut pesan = String::new();
+
+                    for field in fields {
+                        if let redis::Value::Data(data) = field {
+                            let text = String::from_utf8_lossy(&data);
+
+                            if is_first {
+                                print!("   🆕 ID: {}", text);
+                                is_first = false;
+                            } else if current_key.is_empty() {
+                                current_key = text.to_string();
+                            } else {
+                                if current_key == "pesan" {
+                                    pesan = text.to_string();
+                                }
+                                current_key.clear();
+                            }
+                        }
+                    }
+                    println!(" → {}", pesan);
+                }
+            }
+        }
+
+        // ==========================================
+        // STATISTIK
+        // ==========================================
+        let total: i32 = redis_conn.xlen(stream_key).await?;
+        println!("\n📊 Total pengumuman di papan: {} pesan", total);
+
+        // ==========================================
+        // BERSIHIN
+        // ==========================================
+        let _: i32 = redis_conn.del(stream_key).await?;
+        println!("\n🧹 Stream dihapus");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stream_consumer() -> redis::RedisResult<()> {
+        let mut redis_conn = get_redis_conn().await;
+
+        let stream_key = "terminal:pengumuman";
+        let group_name = "penumpang_group";
+        let consumer_name = "penumpang_andi";
+
+        println!("\n╔══════════════════════════════════════════════════════════╗");
+        println!("║     👂 TERMINAL BUS - PENUMPANG MENDENGAR              ║");
+        println!("╚══════════════════════════════════════════════════════════╝\n");
+
+        // ==========================================
+        // STEP 1: PUBLISH DULU BEBERAPA PENGUMUMAN
+        // ==========================================
+        println!("📢 MEMBUAT PENGUMUMAN...");
+
+        let _: () = redis_conn
+            .xadd(stream_key, "*", &[("pesan", "Bus Jakarta datang")])
+            .await?;
+        let _: () = redis_conn
+            .xadd(stream_key, "*", &[("pesan", "Bus Bandung datang")])
+            .await?;
+        let _: () = redis_conn
+            .xadd(stream_key, "*", &[("pesan", "Bus Surabaya datang")])
+            .await?;
+        println!("   ✅ 3 pengumuman dibuat\n");
+
+        // ==========================================
+        // STEP 2: CREATE CONSUMER GROUP
+        // ==========================================
+        println!("👥 MEMBUAT GRUP PENUMPANG:");
+
+        let _: () = redis_conn
+            .xgroup_create_mkstream(stream_key, group_name, "0")
+            .await?;
+        println!("   ✅ Group '{}' dibuat!", group_name);
+
+        // ==========================================
+        // STEP 3: CONSUMER MEMBACA PENGUMUMAN
+        // ==========================================
+        println!("\n👂 PENUMPANG '{}' MENDENGAR:", consumer_name);
+
+        let options = StreamReadOptions::default()
+            .group(group_name, consumer_name)
+            .count(2);
+
+        let reply: StreamReadReply = redis_conn
+            .xread_options(&[stream_key], &[">"], &options)
+            .await?;
+
+        // ==========================================
+        // ✅ FIX: Convert redis::Value ke String
+        // ==========================================
+        println!("\n📻 PENGUMUMAN YANG DIDENGAR:\n");
+
+        for stream_item in reply.keys {
+            println!("   📢 Dari stream: '{}'", stream_item.key);
+            println!("   ┌─────────────────────────────────────────────");
+
+            for item in stream_item.ids {
+                println!("   │ 🆔 ID: {}", item.id);
+                for (key, value) in item.map {
+                    // ✅ Convert redis::Value ke String
+                    let value_str = match value {
+                        redis::Value::Data(data) => String::from_utf8_lossy(&data).to_string(),
+                        redis::Value::Int(num) => num.to_string(),
+                        redis::Value::Bulk(_) => "[array]".to_string(),
+                        _ => "?".to_string(),
+                    };
+                    println!("   │    📝 {}: {}", key, value_str);
+                }
+                println!("   ├─────────────────────────────────────────────");
+            }
+            println!("   └─────────────────────────────────────────────");
+        }
+
+        // ==========================================
+        // STEP 4: BERSIHIN
+        // ==========================================
+        println!("\n🧹 MEMBERSIHKAN...");
+
+        // ✅ URUTAN YANG BENAR:
+        // 1. Hapus GROUP dulu
+        let _: i32 = redis_conn.xgroup_destroy(stream_key, group_name).await?;
+        println!("   ✅ Group '{}' dihapus", group_name);
+
+        // 2. Baru hapus STREAM
+        let _: i32 = redis_conn.del(stream_key).await?;
+        println!("   ✅ Stream '{}' dihapus", stream_key);
+
+        println!("\n🎉 TEST SELESAI!");
 
         Ok(())
     }
