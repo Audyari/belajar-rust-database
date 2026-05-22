@@ -11,7 +11,6 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  # 🔴 TAMBAHKAN INI!
   redis:
     image: redis:alpine
     container_name: redis-stasiun
@@ -22,6 +21,21 @@ services:
     command: redis-server --appendonly yes
     restart: unless-stopped
 
+  # 🚀 TAMBAHKAN APP RUST LO!
+  # app:
+  #   build: .                           # Build dari Dockerfile di folder ini
+  #   container_name: belajar-rust-app
+  #   depends_on:                        # Tunggu db & redis siap dulu
+  #     - db
+  #     - redis
+  #   environment:
+  #     - DATABASE_URL=postgres://postgres:123456@db:5432/belajar_rust_database
+  #     - REDIS_URL=redis://redis:6379
+  #   restart: unless-stopped
+    # Kalo app lo butuh expose port (misal web server)
+    # ports:
+    #   - "8080:8080"
+
 volumes:
   postgres_data:
-  redis_data:  # ← Volume untuk Redis
+  redis_data:
