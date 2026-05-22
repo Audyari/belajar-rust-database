@@ -709,7 +709,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use dotenv::dotenv;
+    use futures::stream::StreamExt;
     use redis::AsyncCommands;
+    use redis::Client;
     use redis::geo::{RadiusOptions, Unit};
     use redis::streams::StreamReadOptions;
     use redis::streams::StreamReadReply;
@@ -1447,6 +1449,64 @@ mod tests {
         println!("   ✅ Stream '{}' dihapus", stream_key);
 
         println!("\n🎉 TEST SELESAI!");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_subscribe() -> redis::RedisResult<()> {
+        //Subscriber emang harus nunggu pesan!
+        //Jadi test ini bakal nunggu terus sampe ada pesan
+
+        // 🔥 BUAT CLIENT
+        let client = Client::open("redis://127.0.0.1:6379")?;
+
+        // 🔥 CARA BARU: BUAT PUBSUB LANGSUNG DARI CLIENT!
+        let mut pubsub = client.get_async_pubsub().await?;
+
+        // Subscribe ke multiple channel
+        pubsub.subscribe("bus:kedatangan").await?;
+        pubsub.subscribe("bus:keberangkatan").await?;
+        pubsub.subscribe("info:promo").await?;
+
+        println!("📻 PENUMPANG ANDI: Pasang telinga ke 3 channel!");
+        println!("   - bus:kedatangan");
+        println!("   - bus:keberangkatan");
+        println!("   - info:promo");
+        println!("\n👂 Menunggu pengumuman...\n");
+
+        // 🔥 DENGERIN PESAN PAKE STREAM
+        while let Some(msg) = pubsub.on_message().next().await {
+            let channel: String = msg.get_channel()?;
+            let payload: String = msg.get_payload()?;
+            println!("📢 [{}] {}", channel, payload);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_publish_pubsub() -> redis::RedisResult<()> {
+        // 🔥 PAKE CLIENT LANGSUNG + get_multiplexed_async_connection
+        let client = redis::Client::open("redis://localhost:6379")?;
+        let mut redis_conn = client.get_multiplexed_async_connection().await?;
+
+        println!("🎙️ PETUGAS TERMINAL: Mengumumkan...\n");
+
+        // ✅ TAMBAHKAN let _: i64 = atau let _: () =
+        let _: i64 = redis_conn
+            .publish("bus:kedatangan", "Bus B123 dari Jakarta TELAH DATANG!")
+            .await?;
+
+        let _: i64 = redis_conn
+            .publish("bus:keberangkatan", "Bus B456 ke Bandung AKAN BERANGKAT!")
+            .await?;
+
+        let _: i64 = redis_conn
+            .publish("info:promo", "PROMO! Tiket malam diskon 50%!")
+            .await?;
+
+        println!("✅ Semua pengumuman terkirim!");
 
         Ok(())
     }
